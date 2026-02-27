@@ -57,7 +57,7 @@ gcloud config get-value account
 In this tutorial we deploy a Flask app that uses the Gemini API. Cloud Run will:
 1. Build a Docker container from our source code
 2. Push it to Artifact Registry
-3. Deploy it as a service with a public HTTPS URL
+3. Deploy it as a service with an HTTPS URL
 
 ---
 
@@ -199,14 +199,12 @@ cd cloud_run/app
 gcloud run deploy gemini-chatbot \
   --source . \
   --region us-central1 \
-  --allow-unauthenticated \
   --set-env-vars PROJECT_ID=$(gcloud config get-value project)
 ```
 
 What this does:
 - `--source .` — Build the container from the current directory (using the Dockerfile)
 - `--region us-central1` — Deploy to the `us-central1` region
-- `--allow-unauthenticated` — Make the app publicly accessible (no login required)
 - `--set-env-vars` — Pass the project ID to the container
 
 The first deploy takes 2-3 minutes (building the container). You'll see output like:
@@ -221,29 +219,64 @@ and is serving 100 percent of traffic.
 Service URL: https://gemini-chatbot-xxxxxxxxxx-uc.a.run.app
 ```
 
-Copy the **Service URL** — that's your live app.
+Copy the **Service URL** — you'll need it in the next steps.
+
+### 7a. Grant access to your organization
+
+Our Google Cloud organization does not allow public (`allUsers`) access to Cloud Run services. Instead, grant invoke access to your university domain:
+
+```bash
+gcloud run services add-iam-policy-binding gemini-chatbot \
+  --region us-central1 \
+  --member="domain:columbia.edu" \
+  --role="roles/run.invoker"
+```
+
+This allows anyone with a `@columbia.edu` Google account to access the chatbot.
+
+> **Note:** If you see a `FAILED_PRECONDITION` error about `allUsers`, that's the org policy at work — the domain-based binding above is the correct approach.
 
 ---
 
 ## Step 8: Test the Live App
 
-### In your browser
+Since the service requires authentication, you have two ways to access it:
 
-Open the Service URL from the deploy output. You should see the same chat UI you tested locally.
+### Option A: Cloud Run Proxy (recommended for local testing)
 
-### With curl
+The proxy forwards requests through your authenticated `gcloud` session:
+
+```bash
+gcloud run services proxy gemini-chatbot --region us-central1 --port 8080
+```
+
+> The first time you run this, gcloud will install the `cloud-run-proxy` component — type `Y` to accept.
+
+Then open **http://localhost:8080** in your browser. You should see the chat UI.
+
+Press `Ctrl + C` to stop the proxy when you're done.
+
+### Option B: Direct URL with identity token
+
+You can also access the deployed URL directly using an identity token:
 
 ```bash
 SERVICE_URL=$(gcloud run services describe gemini-chatbot \
   --region us-central1 \
   --format="value(status.url)")
 
+# Test the chat endpoint
 curl -s -X POST "$SERVICE_URL/api/chat" \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
   -H "Content-Type: application/json" \
   -d '{"message": "What is Cloud Run?"}' | python3 -m json.tool
 ```
 
 You should see a JSON response with Gemini's reply.
+
+### Option C: Browser with Google sign-in
+
+If you granted access to `domain:columbia.edu` in Step 7a, anyone with a Columbia Google account can visit the Service URL directly. Google will prompt them to sign in before accessing the app.
 
 ---
 
@@ -269,6 +302,34 @@ gcloud artifacts repositories delete cloud-run-source-deploy \
 ---
 
 ## Troubleshooting
+
+### "Forbidden — Your client does not have permission to get URL /"
+
+This means you're accessing the Cloud Run URL without authentication. Our organization policy does not allow public (`allUsers`) access. Fix:
+
+1. Grant domain-level access (see [Step 7a](#step-7-deploy-to-cloud-run)):
+   ```bash
+   gcloud run services add-iam-policy-binding gemini-chatbot \
+     --region us-central1 \
+     --member="domain:columbia.edu" \
+     --role="roles/run.invoker"
+   ```
+
+2. Or use the Cloud Run proxy for local testing:
+   ```bash
+   gcloud run services proxy gemini-chatbot --region us-central1 --port 8080
+   ```
+
+### "FAILED_PRECONDITION: One or more users named in the policy do not belong to a permitted customer"
+
+This happens when you try to grant access to `allUsers` or `allAuthenticatedUsers`. The org policy blocks this. Use `domain:columbia.edu` instead:
+
+```bash
+gcloud run services add-iam-policy-binding gemini-chatbot \
+  --region us-central1 \
+  --member="domain:columbia.edu" \
+  --role="roles/run.invoker"
+```
 
 ### "Permission denied" calling Vertex AI from Cloud Run
 
